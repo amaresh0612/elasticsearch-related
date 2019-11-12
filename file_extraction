@@ -1,0 +1,75 @@
+from elasticsearch import Elasticsearch
+from datetime import date, datetime, timedelta
+from dateutil.parser import parse as parse_date
+import pandas as pd
+from ssl import create_default_context
+
+pd.__path__
+
+#context = create_default_context(cafile=path)
+context = create_default_context()
+
+#date calculations
+date = str(date.today())
+today = datetime.today().strftime('%Y-%m-%d')
+l1d = datetime.strftime(parse_date(today) - timedelta(days=1), '%Y-%m-%d')
+l0d = datetime.strftime(parse_date(today), '%Y-%m-%d')
+l90d = datetime.strftime(parse_date(today) - timedelta(days=90), '%Y-%m-%d')
+
+es_prd_monitor = Elasticsearch('ip', timeout=600, 
+                               http_auth=('user', 'pass'),
+                               scheme="https", ssl_context=context)
+                               
+def extract_statuscode(country_index):
+    query = {
+        "size": 0,
+        "aggs": {
+            "dates": {
+                "date_histogram": {
+                    "field": "@timestamp_log",
+                    "interval": interval
+                },
+                "aggs": {
+                    "service_id": {
+                        "terms": {
+                            "field": "serviceID.keyword",
+                            "size": 2147483647
+                        },
+                        "aggs": {
+                            "statusCode": {
+                                "terms": {
+                                    "field": "statusCode.keyword",
+                                    "size": 2147483647
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }}
+    q_filter = {
+        "query": {
+            "bool": {
+                "must": [
+                    {"range": {"@timestamp_log": {"gte": l1d, "lt": l0d}}}
+                    #            {"wildcard": {" StatusCode.keyword": "*"}}
+                ]
+            }
+        }
+    }
+    q_filter.update(query)
+
+    js = es_prd_monitor.search(index=country_index, body=q_filter)
+    l_dict = []
+    for d_agg in js['aggregations']['dates']['buckets']:
+        dates = d_agg['key_as_string']
+        for d_service in d_agg['service_id']['buckets']:
+            service_name = d_service['key']
+            for d_statuscode in d_service['statusCode']['buckets']:
+                statusCode = d_statuscode['key']
+                count = d_statuscode['doc_count']
+                l_dict.append({'date_and_time': dates, 'service_name': service_name,
+                               'statusCode': statusCode, 'Num_of_requests': count})
+    df1 = pd.DataFrame.from_dict(l_dict)
+    df1 = df1[['date_and_time', 'service_name', 'statusCode', 'Num_of_requests']]
+    return df1                               
